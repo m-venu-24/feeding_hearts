@@ -1,0 +1,152 @@
+version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:7.0
+    container_name: feeding_hearts_mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+      MONGO_INITDB_DATABASE: feeding_hearts
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./database/mongodb/schema.js:/docker-entrypoint-initdb.d/schema.js
+    networks:
+      - feeding_hearts_network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL (optional, for complementary data)
+  postgres:
+    image: postgres:16
+    container_name: feeding_hearts_postgres
+    environment:
+      POSTGRES_DB: feeding_hearts
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - feeding_hearts_network
+
+  # Redis (for caching and queue)
+  redis:
+    image: redis:7-alpine
+    container_name: feeding_hearts_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - feeding_hearts_network
+
+  # Django AI/ML Service
+  django:
+    build:
+      context: ./backend/django-ai-ml
+      dockerfile: Dockerfile
+    container_name: feeding_hearts_django
+    command: python manage.py runserver 0.0.0.0:8000
+    environment:
+      DEBUG: 'True'
+      SECRET_KEY: 'django-secret-key'
+      MONGO_HOST: mongodb://admin:password@mongodb:27017
+      MONGO_DB: feeding_hearts
+      DB_HOST: postgres
+      DB_USER: postgres
+      DB_PASSWORD: password
+      DB_NAME: feeding_hearts
+      CELERY_BROKER_URL: redis://redis:6379
+      CELERY_RESULT_BACKEND: redis://redis:6379
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/django-ai-ml:/app
+    depends_on:
+      - mongodb
+      - postgres
+      - redis
+    networks:
+      - feeding_hearts_network
+
+  # Laravel Web Application
+  laravel:
+    build:
+      context: ./backend/laravel-web
+      dockerfile: Dockerfile
+    container_name: feeding_hearts_laravel
+    environment:
+      APP_NAME: FeedingHearts
+      APP_ENV: local
+      APP_DEBUG: 'true'
+      DB_CONNECTION: mongodb
+      DB_HOST: mongodb
+      DB_PORT: 27017
+      DB_DATABASE: feeding_hearts
+      DB_USERNAME: admin
+      DB_PASSWORD: password
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports:
+      - "8001:80"
+    volumes:
+      - ./backend/laravel-web:/var/www/html
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - feeding_hearts_network
+
+  # Java Service
+  java:
+    build:
+      context: ./backend/java-service
+      dockerfile: Dockerfile
+    container_name: feeding_hearts_java
+    environment:
+      SPRING_DATA_MONGODB_URI: mongodb://admin:password@mongodb:27017/feeding_hearts
+      SPRING_DATA_MONGODB_USERNAME: admin
+      SPRING_DATA_MONGODB_PASSWORD: password
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - feeding_hearts_network
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: feeding_hearts_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - django
+      - laravel
+      - java
+    networks:
+      - feeding_hearts_network
+
+volumes:
+  mongodb_data:
+  postgres_data:
+  redis_data:
+
+networks:
+  feeding_hearts_network:
+    driver: bridge

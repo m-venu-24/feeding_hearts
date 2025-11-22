@@ -1,0 +1,246 @@
+version: '3.9'
+
+services:
+  # ============ DATABASES ============
+  mongodb:
+    image: mongo:7.0
+    container_name: feeding-hearts-mongo
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: secure_password
+      MONGO_INITDB_DATABASE: feeding_hearts
+    volumes:
+      - mongo_data:/data/db
+      - ./database/mongodb/init.js:/docker-entrypoint-initdb.d/init.js
+    networks:
+      - feeding-hearts-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: feeding-hearts-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: feeding_hearts
+      POSTGRES_PASSWORD: secure_password
+      POSTGRES_DB: feeding_hearts
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - feeding-hearts-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U feeding_hearts"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: feeding-hearts-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - feeding-hearts-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============ BACKEND SERVICES ============
+  django:
+    build:
+      context: ./backend/django-ai-ml
+      dockerfile: Dockerfile
+    container_name: feeding-hearts-django
+    ports:
+      - "8000:8000"
+    environment:
+      DEBUG: 'False'
+      DJANGO_SETTINGS_MODULE: config.settings
+      ALLOWED_HOSTS: localhost,127.0.0.1,django,feeding-hearts.local
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: feeding_hearts
+      DB_USER: feeding_hearts
+      DB_PASSWORD: secure_password
+      DB_HOST: postgres
+      DB_PORT: 5432
+      MONGODB_URI: mongodb://admin:secure_password@mongodb:27017/feeding_hearts
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: your-secret-key-change-in-production
+      CORS_ORIGINS: http://localhost:4200,http://localhost:5173,http://localhost:5174,http://localhost:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/django-ai-ml:/app
+    networks:
+      - feeding-hearts-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  laravel:
+    build:
+      context: ./backend/laravel-web
+      dockerfile: Dockerfile
+    container_name: feeding-hearts-laravel
+    ports:
+      - "8001:8000"
+    environment:
+      APP_NAME: FeedingHearts
+      APP_ENV: local
+      APP_DEBUG: 'true'
+      APP_URL: http://localhost:8001
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: feeding_hearts
+      DB_USERNAME: root
+      DB_PASSWORD: secure_password
+      MONGODB_URI: mongodb://admin:secure_password@mongodb:27017/feeding_hearts
+      REDIS_HOST: redis
+      REDIS_PASSWORD: null
+      REDIS_PORT: 6379
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/laravel-web:/app
+    networks:
+      - feeding-hearts-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  java:
+    build:
+      context: ./backend/java-service
+      dockerfile: Dockerfile
+    container_name: feeding-hearts-java
+    ports:
+      - "8002:8080"
+    environment:
+      SPRING_DATA_MONGODB_URI: mongodb://admin:secure_password@mongodb:27017/feeding_hearts
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+      SERVER_PORT: 8080
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,metrics
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/java-service:/app
+    networks:
+      - feeding-hearts-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============ FRONTEND SERVICES ============
+  angular-admin:
+    build:
+      context: ./frontend/angular-admin
+      dockerfile: Dockerfile.dev
+    container_name: feeding-hearts-angular
+    ports:
+      - "4200:4200"
+    environment:
+      NG_APP_API_URL: http://localhost:8000/api
+      NG_APP_ENV: development
+    volumes:
+      - ./frontend/angular-admin/src:/app/src
+    networks:
+      - feeding-hearts-network
+    depends_on:
+      - django
+
+  react-app:
+    build:
+      context: ./frontend/react-app
+      dockerfile: Dockerfile.dev
+    container_name: feeding-hearts-react
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:8000/api
+      VITE_APP_NAME: Feeding Hearts
+    volumes:
+      - ./frontend/react-app/src:/app/src
+    networks:
+      - feeding-hearts-network
+    depends_on:
+      - django
+
+  vue-integration:
+    build:
+      context: ./frontend/vue-integration
+      dockerfile: Dockerfile.dev
+    container_name: feeding-hearts-vue
+    ports:
+      - "5174:5174"
+    environment:
+      VITE_API_URL: http://localhost:8000/api
+    volumes:
+      - ./frontend/vue-integration/src:/app/src
+    networks:
+      - feeding-hearts-network
+    depends_on:
+      - django
+
+  # ============ NGINX REVERSE PROXY ============
+  nginx:
+    image: nginx:alpine
+    container_name: feeding-hearts-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./frontend/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./frontend/nginx/ssl:/etc/nginx/ssl:ro
+    networks:
+      - feeding-hearts-network
+    depends_on:
+      - django
+      - laravel
+      - java
+      - angular-admin
+      - react-app
+      - vue-integration
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mongo_data:
+  postgres_data:
+  redis_data:
+
+networks:
+  feeding-hearts-network:
+    driver: bridge
